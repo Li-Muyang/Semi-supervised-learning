@@ -15,7 +15,7 @@ from torch.cuda.amp import autocast, GradScaler
 from semilearn.core.hooks import Hook, get_priority, CheckpointHook, TimerHook, LoggingHook, DistSamplerSeedHook, ParamUpdateHook, EvaluationHook, EMAHook, WANDBHook, AimHook
 from semilearn.core.utils import get_dataset, get_data_loader, get_optimizer, get_cosine_schedule_with_warmup, Bn_Controller
 from semilearn.core.criterions import CELoss, ConsistencyLoss
-
+from PIL import Image
 
 class AlgorithmBase:
     """
@@ -43,6 +43,7 @@ class AlgorithmBase:
         # common arguments
         self.args = args
         self.num_classes = args.num_classes
+        self.num_labels = args.num_labels
         self.ema_m = args.ema_m
         self.epochs = args.epoch
         self.num_train_iter = args.num_train_iter
@@ -55,9 +56,10 @@ class AlgorithmBase:
         self.clip_grad = args.clip_grad
         self.save_name = args.save_name
         self.save_dir = args.save_dir
+        self.load_path = args.load_path
         self.resume = args.resume
         self.algorithm = args.algorithm
-
+        self.dataset = args.dataset
         # commaon utils arguments
         self.tb_log = tb_log
         self.print_fn = print if logger is None else logger.info
@@ -101,7 +103,9 @@ class AlgorithmBase:
         self._hooks = []  # record underlying hooks 
         self.hooks_dict = OrderedDict() # actual object to be used to call hooks
         self.set_hooks()
-
+        
+        self.switch = "on"
+        
     def init(self, **kwargs):
         """
         algorithm specific init function, to add parameters into class
@@ -288,29 +292,94 @@ class AlgorithmBase:
         """
         self.model.train()
         self.call_hook("before_run")
-
+        # self.load_model(self.load_path)
+        threshold_tape = np.zeros(self.epochs)
+        psudeo_acc_tape = np.zeros(self.epochs)
         for epoch in range(self.start_epoch, self.epochs):
+            self.correct = 0
+            self.total = 0
+            self.total_sum = 0
+            self.average_thres = 0
             self.epoch = epoch
-            
+            self.class_threshold_total = torch.zeros(self.num_classes)
+            self.class_count = torch.zeros(self.num_classes)
             # prevent the training iterations exceed args.num_train_iter
             if self.it >= self.num_train_iter:
                 break
             
-            self.call_hook("before_train_epoch")
-
+            if self.algorithm in ['instant','freematch_instant','adamatch_instant','fixmatch_instant'] and self.it >= self.instant_start:
+                ncp = []
+                temp = []
+                if epoch < 10:
+                    for k in range(self.num_labels):
+                        data = Image.fromarray(self.dataset_dict['train_lb'].data[k])
+                        img_size = data.size
+                        temp.append(self.dataset_dict['train_lb'].transform(data))
+                    b = torch.Tensor(self.num_labels,len(data.getbands()),data.size[0],data.size[1])
+                    x_lb = torch.stack(temp)
+                
+                    out = torch.zeros((self.num_labels,self.num_classes))
+                    for i in range(0,self.num_labels,20):
+                        if i + 20 <= self.num_labels:
+                            out[i:i+20] = self.model(x_lb[i:i+20].cuda(self.gpu))['logits'].detach().cpu()
+                        else:
+                            out[i:] = self.model(x_lb[i:].cuda(self.gpu))['logits'].detach().cpu()
+                    ncp = F.softmax(out,dim=-1)
+                    
+                    class_T = torch.zeros((self.num_classes,self.num_classes))
+                    for k in range(self.num_classes):
+                        indexes = (self.dataset_dict['train_lb'].targets == k).nonzero()[0].squeeze()
+                        class_T[k] = ncp[indexes].mean(dim=0)
+                    self.class_T = class_T
+                    
+                    self.train_T(ncp.cuda(self.gpu),x_lb)
+                else:
+                    for k in range(self.num_labels):
+                        data = Image.fromarray(self.dataset_dict['train_lb'].data[k])
+                        img_size = data.size
+                        temp.append(self.dataset_dict['train_lb'].transform(data))
+                    b = torch.Tensor(self.num_labels,len(data.getbands()),data.size[0],data.size[1])
+                    x_lb = torch.stack(temp)
+                
+                    out = torch.zeros((self.num_labels,self.num_classes))
+                    for i in range(0,self.num_labels,40):
+                        if i + 40 <= self.num_labels:
+                            out[i:i+40] = self.model(x_lb[i:i+40].cuda(self.gpu))['logits'].detach().cpu()
+                        else:
+                            out[i:] = self.model(x_lb[i:].cuda(self.gpu))['logits'].detach().cpu()
+                    ncp = F.softmax(out,dim=-1)
+                    self.train_T(ncp.cuda(self.gpu),x_lb)
+                
             for data_lb, data_ulb in zip(self.loader_dict['train_lb'],
                                          self.loader_dict['train_ulb']):
                 # prevent the training iterations exceed args.num_train_iter
                 if self.it >= self.num_train_iter:
                     break
-
+                
                 self.call_hook("before_train_step")
                 self.out_dict, self.log_dict = self.train_step(**self.process_batch(**data_lb, **data_ulb))
                 self.call_hook("after_train_step")
                 self.it += 1
             
             self.call_hook("after_train_epoch")
-
+            
+            try:
+                print("Correct ratio {} at epoch {}".format(np.round(self.correct.detach().cpu() / self.total.detach().cpu(),4), epoch))
+                psudeo_acc_tape[epoch] = np.round(self.correct.detach().cpu() / self.total.detach().cpu(),4)
+                print("Mask ratio {} at epoch {}".format(np.round(self.total.detach().cpu() / self.total_sum,4), epoch))
+                
+                
+            except:
+                pass
+            self.average_thres /= self.total_sum
+            print("Average threshold at epoch {}: {}".format(epoch, np.round(self.average_thres,4)))
+            threshold_tape[epoch] = self.average_thres
+            print(threshold_tape)
+                
+                
+                
+        np.save('threshold.npy', threshold_tape)
+        np.save('p_acc.npy', psudeo_acc_tape)
         self.call_hook("after_run")
 
 
