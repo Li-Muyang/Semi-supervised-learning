@@ -52,7 +52,7 @@ class SoftMatch(AlgorithmBase):
         self.register_hook(SoftMatchWeightingHook(num_classes=self.num_classes, n_sigma=self.args.n_sigma, momentum=self.args.ema_p, per_class=self.args.per_class), "MaskingHook")
         super().set_hooks()    
 
-    def train_step(self, x_lb, y_lb, x_ulb_w, x_ulb_s):
+    def train_step(self, x_lb, y_lb, idx_ulb, x_ulb_w, x_ulb_s):
         num_lb = y_lb.shape[0]
 
         # inference and calculate sup/unsup losses
@@ -96,6 +96,18 @@ class SoftMatch(AlgorithmBase):
                                           logits=logits_x_ulb_w,
                                           use_hard_label=self.use_hard_label,
                                           T=self.T)
+
+            # Compute pseudo label accuracy by confidence range (only for pre-trained models)
+            # Note: using original probs (before dist_align) for confidence computation
+            probs_x_ulb_w_orig = torch.softmax(logits_x_ulb_w.detach(), dim=-1)
+            if self.registered_hook("PseudoLabelAccuracyHook"):
+                self.call_hook("compute_pseudo_label_accuracy", "PseudoLabelAccuracyHook",
+                              probs_x_ulb=probs_x_ulb_w_orig,
+                              pseudo_labels=pseudo_label,
+                              idx_ulb=idx_ulb)
+                # Log pseudo label accuracy periodically (at eval intervals)
+                if self.it > 0 and self.it % self.num_eval_iter == 0:
+                    self.call_hook("log_pseudo_label_accuracy", "PseudoLabelAccuracyHook")
 
             # calculate loss
             unsup_loss = self.consistency_loss(logits_x_ulb_s,

@@ -65,7 +65,7 @@ class FreeMatch(AlgorithmBase):
         super().set_hooks()
 
 
-    def train_step(self, x_lb, y_lb, x_ulb_w, x_ulb_s):
+    def train_step(self, x_lb, y_lb, idx_ulb, x_ulb_w, x_ulb_s):
         num_lb = y_lb.shape[0]
 
         # inference and calculate sup/unsup losses
@@ -96,12 +96,24 @@ class FreeMatch(AlgorithmBase):
             # calculate mask
             mask = self.call_hook("masking", "MaskingHook", logits_x_ulb=logits_x_ulb_w)
 
+            # compute probabilities for pseudo label accuracy tracking
+            probs_x_ulb_w = self.compute_prob(logits_x_ulb_w.detach())
 
             # generate unlabeled targets using pseudo label hook
             pseudo_label = self.call_hook("gen_ulb_targets", "PseudoLabelingHook", 
                                           logits=logits_x_ulb_w,
                                           use_hard_label=self.use_hard_label,
                                           T=self.T)
+
+            # Compute pseudo label accuracy by confidence range (only for pre-trained models)
+            if self.registered_hook("PseudoLabelAccuracyHook"):
+                self.call_hook("compute_pseudo_label_accuracy", "PseudoLabelAccuracyHook",
+                              probs_x_ulb=probs_x_ulb_w,
+                              pseudo_labels=pseudo_label,
+                              idx_ulb=idx_ulb)
+                # Log pseudo label accuracy periodically (at eval intervals)
+                if self.it > 0 and self.it % self.num_eval_iter == 0:
+                    self.call_hook("log_pseudo_label_accuracy", "PseudoLabelAccuracyHook")
             
             # calculate unlabeled loss
             unsup_loss = self.consistency_loss(logits_x_ulb_s,

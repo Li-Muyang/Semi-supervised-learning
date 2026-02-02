@@ -101,6 +101,16 @@ class FlexMatch(AlgorithmBase):
                                           T=self.T,
                                           softmax=False)
 
+            # Compute pseudo label accuracy by confidence range (only for pre-trained models)
+            if self.registered_hook("PseudoLabelAccuracyHook"):
+                self.call_hook("compute_pseudo_label_accuracy", "PseudoLabelAccuracyHook",
+                              probs_x_ulb=probs_x_ulb_w,
+                              pseudo_labels=pseudo_label,
+                              idx_ulb=idx_ulb)
+                # Log pseudo label accuracy periodically (at eval intervals)
+                if self.it > 0 and self.it % self.num_eval_iter == 0:
+                    self.call_hook("log_pseudo_label_accuracy", "PseudoLabelAccuracyHook")
+
             unsup_loss = self.consistency_loss(logits_x_ulb_s,
                                                pseudo_label,
                                                'ce',

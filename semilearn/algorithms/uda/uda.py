@@ -47,7 +47,7 @@ class UDA(AlgorithmBase):
         self.register_hook(FixedThresholdingHook(), "MaskingHook")
         super().set_hooks()
 
-    def train_step(self, x_lb, y_lb, x_ulb_w, x_ulb_s):
+    def train_step(self, x_lb, y_lb, idx_ulb, x_ulb_w, x_ulb_s):
         num_lb = y_lb.shape[0]
 
         # inference and calculate sup/unsup losses
@@ -94,6 +94,18 @@ class UDA(AlgorithmBase):
                                           use_hard_label=False,
                                           T=self.T,
                                           softmax=False)
+
+            # Compute pseudo label accuracy by confidence range (only for pre-trained models)
+            if self.registered_hook("PseudoLabelAccuracyHook"):
+                # For UDA, pseudo_label is soft, so get hard label from argmax
+                pseudo_label_hard = torch.argmax(pseudo_label, dim=-1) if pseudo_label.dim() > 1 else pseudo_label
+                self.call_hook("compute_pseudo_label_accuracy", "PseudoLabelAccuracyHook",
+                              probs_x_ulb=probs_x_ulb_w,
+                              pseudo_labels=pseudo_label_hard,
+                              idx_ulb=idx_ulb)
+                # Log pseudo label accuracy periodically (at eval intervals)
+                if self.it > 0 and self.it % self.num_eval_iter == 0:
+                    self.call_hook("log_pseudo_label_accuracy", "PseudoLabelAccuracyHook")
 
             unsup_loss = self.consistency_loss(logits_x_ulb_s,
                                                pseudo_label, 
