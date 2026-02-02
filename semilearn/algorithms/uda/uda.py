@@ -103,9 +103,6 @@ class UDA(AlgorithmBase):
                               probs_x_ulb=probs_x_ulb_w,
                               pseudo_labels=pseudo_label_hard,
                               idx_ulb=idx_ulb)
-                # Log pseudo label accuracy periodically (at eval intervals)
-                if self.it > 0 and self.it % self.num_eval_iter == 0:
-                    self.call_hook("log_pseudo_label_accuracy", "PseudoLabelAccuracyHook")
 
             unsup_loss = self.consistency_loss(logits_x_ulb_s,
                                                pseudo_label, 
@@ -119,6 +116,15 @@ class UDA(AlgorithmBase):
                                          unsup_loss=unsup_loss.item(), 
                                          total_loss=total_loss.item(), 
                                          util_ratio=mask.float().mean().item())
+        
+        # Add pseudo label accuracy to log_dict (printed at num_log_iter frequency)
+        if self.registered_hook("PseudoLabelAccuracyHook"):
+            pl_acc_stats = self.call_hook("get_log_dict", "PseudoLabelAccuracyHook")
+            log_dict.update(pl_acc_stats)
+            # Reset stats at log intervals to show recent accuracy
+            if self.it > 0 and self.it % self.num_log_iter == 0:
+                self.hooks_dict["PseudoLabelAccuracyHook"].reset_stats()
+        
         return out_dict, log_dict
 
     def TSA(self, schedule, cur_iter, total_iter, num_classes):
