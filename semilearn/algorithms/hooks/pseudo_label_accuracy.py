@@ -150,7 +150,7 @@ class PseudoLabelAccuracyHook(Hook):
         self.reset_stats()
         return stats
     
-    def get_log_dict(self):
+    def get_log_dict(self, algorithm=None, *args, **kwargs):
         """Get stats formatted for log_dict integration (without resetting)"""
         if not self._initialized:
             return {}
